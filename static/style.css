@@ -224,3 +224,168 @@ main {
 .legend .sw.p     { background: var(--p-bg); }
 .legend .sw.yo    { background: var(--yo-bg); }
 .legend .sw.k2tog { background: var(--kt-bg); }
+
+/* ---- 逐针来源追溯 ---- */
+.trace-mode-btn {
+  margin-left: 8px;
+  font-size: 11.5px;
+  padding: 1px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--muted);
+  cursor: pointer;
+  vertical-align: 1px;
+}
+.trace-mode-btn.on {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: #fdf1e3;
+  font-weight: 600;
+}
+#chart.trace-mode .cell { cursor: crosshair; }
+
+.chip .tracejump {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  padding: 0 2px 0 3px;
+  cursor: pointer;
+  font-weight: 700;
+}
+.chip .tracejump:hover { text-decoration: underline; }
+.chip.trace-target {
+  outline: 2.5px solid var(--accent);
+  outline-offset: 1px;
+  font-weight: 700;
+}
+.chip.trace-ancestor {
+  box-shadow: inset 0 0 0 2px rgba(21, 101, 192, .45);
+}
+
+.trace-pane { margin: 0 18px 24px; }
+.trace-body { font-size: 13px; }
+.trace-empty, .trace-denied { color: var(--muted); margin: 4px 2px; }
+.trace-denied { color: var(--err); font-weight: 600; }
+
+.trace-head {
+  display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.trace-target-name { font-weight: 700; }
+.trace-count { color: var(--muted); font-size: 12px; }
+.trace-clear {
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 5px;
+  padding: 1px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--muted);
+}
+.trace-clear:hover { border-color: var(--accent); color: var(--accent); }
+
+.trace-branches {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin: 2px 0 8px;
+  padding: 6px 8px;
+  background: #faf7f1;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 12.5px;
+}
+.tb-label { color: var(--muted); }
+.leaf-tag {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 9px;
+  font-variant-numeric: tabular-nums;
+}
+.leaf-dot {
+  display: inline-block;
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  margin-right: 2px;
+}
+
+.trace-tree { font-size: 12.5px; }
+ol.tt-children {
+  list-style: none;
+  margin: 2px 0 0;
+  padding-left: 18px;
+  border-left: 1px dashed #d8d2c6;
+}
+li.tt-li { margin: 2px 0; padding-left: 8px; position: relative; }
+li.tt-li::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 11px;
+  width: 8px;
+  border-top: 1px dashed #d8d2c6;
+}
+.tt-node {
+  display: inline-flex; align-items: baseline; gap: 6px;
+  flex-wrap: wrap;
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+.tt-node.root { background: #fdf1e3; }
+.tt-node.terminal { color: #1b5e20; }
+.tt-node.yo-term { color: var(--yo-fg); }
+.tt-rel, .tt-note { color: var(--muted); font-size: 11.5px; }
+.tt-undrawn {
+  font-size: 10.5px;
+  color: #8d6e43;
+  background: #f3ecd8;
+  border-radius: 3px;
+  padding: 0 5px;
+}
+.linkish {
+  border: 0;
+  background: transparent;
+  color: #1565c0;
+  font: inherit;
+  font-size: 11.5px;
+  padding: 0 2px;
+  cursor: pointer;
+}
+.linkish:hover { text-decoration: underline; }
+.trace-note { color: var(--muted); font-size: 12px; margin: 8px 2px 0; }
+.trace-note.warn { color: var(--accent); font-weight: 600; }
+
+.trace-selector {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin-top: 10px;
+  padding: 7px 9px;
+  border: 1px dashed #d8d2c6;
+  border-radius: 6px;
+  background: #fbf8f2;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.trace-inp {
+  width: 64px;
+  padding: 2px 6px;
+  font: inherit;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+.trace-go {
+  border: 1px solid var(--accent);
+  background: #fdf1e3;
+  color: var(--accent);
+  border-radius: 5px;
+  padding: 2px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.trace-go:hover { filter: brightness(.97); }
+
+#chart .tr-edges line { pointer-events: none; }
+#chart .tr-marks rect, #chart .tr-marks polygon,
+#chart .tr-marks circle, #chart .tr-marks text { pointer-events: none; }
+#chart .tr-cast-label { font-family: ui-monospace, Menlo, monospace; }

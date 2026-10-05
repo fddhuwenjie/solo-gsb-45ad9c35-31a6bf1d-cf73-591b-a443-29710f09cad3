@@ -401,5 +401,96 @@ class TestSnippets(unittest.TestCase):
         self.assertIn("'@' 后需要片段名称", r['rows'][0]['error']['message'])
 
 
+class TestPredecessors(unittest.TestCase):
+    """逐针前驱 'pre'：每行按实际消耗记录前驱针位（1 基）。"""
+
+    def test_kp_take_one_each(self):
+        r = run(4, 'k p k k')
+        sts = r['rows'][0]['stitches']
+        self.assertEqual([s['pre'] for s in sts],
+                         [[1], [2], [3], [4]])
+
+    def test_k2tog_takes_two(self):
+        r = run(4, 'k2tog k2tog')
+        sts = r['rows'][0]['stitches']
+        self.assertEqual([s['pre'] for s in sts], [[1, 2], [3, 4]])
+
+    def test_yo_has_no_predecessor(self):
+        r = run(2, 'k yo k')
+        sts = r['rows'][0]['stitches']
+        self.assertEqual([s['pre'] for s in sts], [[1], [], [2]])
+
+    def test_row_chain_predecessors_point_to_prior_outputs(self):
+        # 行1: k yo k（2→3，行2 的第 2 针由 yo 凭空产生）
+        # 行2: k2tog k：并入行1 的 1、2 针，再承接第 3 针
+        r = run(2, 'k yo k', 'k2tog k')
+        s1, s2 = (r['rows'][0]['stitches'], r['rows'][1]['stitches'])
+        self.assertEqual([s['pre'] for s in s1], [[1], [], [2]])
+        self.assertEqual([s['pre'] for s in s2], [[1, 2], [3]])
+
+    def test_group_repeat_consumes_fresh_positions(self):
+        # (k2tog)x2：两次展开同一源码段，各并 1,2 与 3,4，不合并针目
+        r = run(4, '(k2tog)x2')
+        sts = r['rows'][0]['stitches']
+        self.assertEqual([s['pre'] for s in sts], [[1, 2], [3, 4]])
+
+    def test_nested_group_and_yo(self):
+        # (k (p yo)x2)x2：耗 6 产 10
+        r = run(6, '(k (p yo)x2)x2')
+        sts = r['rows'][0]['stitches']
+        pres = [s['pre'] for s in sts]
+        # k p yo p yo | k p yo p yo
+        self.assertEqual(pres, [[1], [2], [], [3], [],
+                                [4], [5], [], [6], []])
+
+    def test_star_repeat_each_iteration_distinct(self):
+        # 10 针：k4 后 *yo k2tog* 重复 3 次，每次并不同的针位
+        r = run(10, 'k k k k *yo k2tog*')
+        sts = r['rows'][0]['stitches']
+        self.assertEqual(len(sts), 10)
+        # 前 4 个 k，然后 yo/k2tog 三组
+        self.assertEqual([s['pre'] for s in sts[:4]],
+                         [[1], [2], [3], [4]])
+        self.assertEqual([s['pre'] for s in sts[4:]],
+                         [[], [5, 6], [], [7, 8], [], [9, 10]])
+
+    def test_predecessors_partition_input_row(self):
+        # 任意合法行：每个输入针位恰好被消耗一次（k/p 或 k2tog）
+        r = run(12, '(k (p yo)x2)x2 *k2tog*')
+        used = [p for s in r['rows'][0]['stitches'] for p in s['pre']]
+        self.assertEqual(sorted(used), list(range(1, 13)))
+
+    def test_snippet_references_not_merged(self):
+        # 同一 @a 引用两次：pre 按每次实际消耗记录
+        r = compile_rows(4, ['@a @a'], 'a = k2tog')
+        sts = r['rows'][0]['stitches']
+        self.assertEqual([s['pre'] for s in sts], [[1, 2], [3, 4]])
+
+    def test_snippet_with_yo(self):
+        # 镂空 = yo k2tog，10 针：k4 后重复 3 次
+        r = compile_rows(10, ['k k k k *@镂空*'], '镂空 = yo, k2tog')
+        sts = r['rows'][0]['stitches']
+        self.assertEqual([s['pre'] for s in sts],
+                         [[1], [2], [3], [4],
+                          [], [5, 6], [], [7, 8], [], [9, 10]])
+
+    def test_trace_back_to_cast_on_and_yo(self):
+        # 端到端：行2 产出针的源头 = 起针针位 + 行1 的 yo
+        r = run(2, 'k2tog yo', 'k k')
+        row2 = r['rows'][1]['stitches']
+        # 行2 第1针 → 行1 第1针（= 起针 1、2）；第2针 → 行1 第2针（yo 新针）
+        self.assertEqual([s['pre'] for s in row2], [[1], [2]])
+        row1 = r['rows'][0]['stitches']
+        self.assertEqual(row1[0]['pre'], [1, 2])
+        self.assertEqual(row1[1]['pre'], [])
+
+    def test_error_and_blocked_rows_have_no_pre(self):
+        r = run(4, 'k k', 'k k k k')
+        self.assertEqual(r['rows'][0]['status'], 'error')
+        self.assertNotIn('stitches', r['rows'][0])
+        self.assertEqual(r['rows'][1]['status'], 'blocked')
+        self.assertNotIn('stitches', r['rows'][1])
+
+
 if __name__ == '__main__':
     unittest.main()

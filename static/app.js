@@ -10,13 +10,22 @@ const defsInfoEl = document.getElementById('defsInfo');
 const rowsEl = document.getElementById('rows');
 const statusEl = document.getElementById('status');
 const chartEl = document.getElementById('chart');
+const traceModeBtn = document.getElementById('traceModeBtn');
+const traceBodyEl = document.getElementById('traceBody');
 
 const SVGNS = 'http://www.w3.org/2000/svg';
 const LINE_H = 20;          // 与 CSS 中 textarea 行高一致
 const MAX_CHIPS = 400;      // 展开结果中最多渲染的针法标记数
 const MAX_CELLS = 1000;     // 图解中每行最多渲染的格数（超出画省略号）
+const MAX_TRACE_NODES = 6000; // 追溯树最多覆盖的针位（超出则文字提示）
 
 const SYM_NAME = { k: 'k 下针', p: 'p 上针', yo: 'yo 挂线', k2tog: 'k2tog 二并一' };
+
+// 追溯来源分支配色（按叶子序号循环取用）
+const TRACE_COLORS = [
+  '#d84343', '#1565c0', '#2e7d32', '#b3541e', '#6a1b9a', '#00838f',
+  '#ad1457', '#558b2f', '#4e342e', '#5c6bc0', '#c2185b', '#ef6c00',
+];
 
 // 示例：片段定义（含相互引用）+ 行源码引用
 const DEFAULT_DEFS = [
@@ -38,6 +47,15 @@ let lineStarts = [0];
 let defLineStarts = [0];
 let lastData = null;
 let reqSeq = 0;
+
+/* 逐针追溯状态：
+   trace = {row, pos, tree, castLeaves, yoLeaves, truncated, nodeCount}
+   或 null（未选择 / 已因编辑清除）。tree 节点：
+     {row, pos, sym, st, children:[node...], kind:'stitch'|'cast'|'yo',
+      color, inChart}  row=0 表示起针行 */
+let trace = null;
+let traceMode = false;   // 图解「追溯选择模式」：开启后点格元选择追溯目标
+let chartGeom = null;    // 最近一次图解几何 {cell, left, top, n, yOf}
 
 /* ---------- 工具 ---------- */
 
@@ -87,6 +105,10 @@ function scheduleCompile() {
 }
 
 async function doCompile() {
+  // 任何重新编译都意味着源码/定义/起针可能已变：立即清除旧追溯，
+  // 旧针位编号不得沿用到新结果（修正后可重新选择）。
+  clearTrace({ silent: true });
+
   const text = srcEl.value;
   const defsText = defsEl.value;
   lineStarts = computeLineStarts(text);
@@ -117,6 +139,8 @@ async function doCompile() {
   renderRows(data);
   renderChart(data);
   renderStatus(data);
+  // 追溯已在编译前清除；若当前恰好有合法选择（正常不会发生），重绘覆盖层
+  renderTrace();
 }
 
 /* ---------- 状态栏 ---------- */
@@ -227,12 +251,18 @@ function renderRowCard(row) {
       el('span', { class: 'io' }, `入 ${row.in} → 出 ${row.out}`));
     const chips = el('div', { class: 'chips' });
     const list = row.stitches.slice(0, MAX_CHIPS);
-    list.forEach(st => {
+    list.forEach((st, j) => {
       const chip = el('span', {
         class: 'chip ' + st.sym + (st.def ? ' fromdef' : ''),
         title: chipTitle(st),
-        'data-row': row.row, 'data-s': st.s, 'data-e': st.e,
+        'data-row': row.row, 'data-pos': j + 1,
+        'data-s': st.s, 'data-e': st.e,
       }, st.sym);
+      chip.append(el('button', {
+        class: 'tracejump', type: 'button',
+        title: '逐针追溯：本针沿各行实际消耗来自哪些针位',
+        'data-trace-row': row.row, 'data-trace-pos': j + 1,
+      }, '溯'));
       if (st.def) {
         chip.append(el('button', {
           class: 'defjump', type: 'button',
@@ -327,6 +357,7 @@ function cursorRow() {
 
 function renderChart(data) {
   chartEl.textContent = '';
+  chartGeom = null;
   if (data.requestError) return;
 
   const rows = data.rows;
@@ -343,6 +374,11 @@ function renderChart(data) {
   chartEl.style.minWidth = width + 'px';
 
   const yOf = i => TOP + (n - 1 - i) * cell; // 第 1 行在底部
+  chartGeom = {
+    cell, left: LEFT, top: TOP, n, yOf,
+    origHeight: height, capY: TOP + n * cell + BOTTOM / 2,
+    contentEnd: TOP + n * cell,
+  };
 
   rows.forEach((row, i) => {
     const y = yOf(i);
@@ -405,8 +441,9 @@ function renderChart(data) {
     }
   });
 
-  // 底部起针标注
+  // 底部起针标注（追溯展开时由 drawTraceOverlay 下移，避开起针标记）
   const co = svgEl('text', {
+    id: 'castCaption',
     x: LEFT, y: TOP + n * cell + BOTTOM / 2,
     'dominant-baseline': 'central', 'font-size': 11, fill: '#8a8378',
   });
@@ -416,7 +453,8 @@ function renderChart(data) {
 
 function makeCell(rowNo, idx, st, x, y, cell) {
   const attrs = {
-    class: 'cell', 'data-row': rowNo, 'data-s': st.s, 'data-e': st.e,
+    class: 'cell', 'data-row': rowNo, 'data-pos': idx + 1,
+    'data-s': st.s, 'data-e': st.e,
   };
   if (st.def) { // 片段针法：双击可定位到定义
     attrs['data-def-line'] = st.def.line;
@@ -462,27 +500,54 @@ function makeCell(rowNo, idx, st, x, y, cell) {
     (st.def
       ? `引用第 ${st.s + 1}–${st.e} 列 · 定义「${st.def.name}」第 ` +
         `${st.def.line} 行（双击定位定义）`
-      : `源第 ${st.s + 1}–${st.e} 列`);
+      : `源第 ${st.s + 1}–${st.e} 列`) +
+    '（打开「追溯选择模式」后单击可逐针追溯来源）';
   g.append(title);
   return g;
 }
 
 /* ---------- 事件 ---------- */
 
-srcEl.addEventListener('input', scheduleCompile);
-defsEl.addEventListener('input', scheduleCompile);
-castEl.addEventListener('input', scheduleCompile);
+// 编辑源码/定义/起针：立即清除旧追溯（无需等待防抖编译返回），
+// 再调度重编译；编译返回前旧追溯不会残留在界面上。
+function onEdit() {
+  clearTrace({ silent: true });
+  scheduleCompile();
+}
+srcEl.addEventListener('input', onEdit);
+defsEl.addEventListener('input', onEdit);
+castEl.addEventListener('input', onEdit);
 srcEl.addEventListener('scroll', () => { gutterEl.scrollTop = srcEl.scrollTop; });
 defsEl.addEventListener('scroll',
   () => { defsGutterEl.scrollTop = defsEl.scrollTop; });
 srcEl.addEventListener('keyup', () => markActiveRow(cursorRow()));
 srcEl.addEventListener('click', () => markActiveRow(cursorRow()));
 
-// 行卡片 / 图解中的点击 → 回到源码；↗ 按钮 → 定位定义（事件委托）
+// 图解「追溯选择模式」开关
+traceModeBtn.addEventListener('click', () => setTraceMode(!traceMode));
+traceBodyEl.addEventListener('click', ev => {
+  if (ev.target.closest('.trace-clear')) clearTrace();
+});
+
+// 行卡片 / 图解中的点击：
+//   「溯」按钮 → 开始逐针追溯（不做源码定位）；
+//   追溯模式下点图解格元 → 选择追溯目标；
+//   其余 → 回到源码（原单击定位行源码保持可用）。
+// ↗ 按钮始终定位定义；双击格元定位定义保持不变。
 document.addEventListener('click', ev => {
+  const tj = ev.target.closest('.tracejump');
+  if (tj) {
+    startTrace(+tj.dataset.traceRow, +tj.dataset.tracePos);
+    return;
+  }
   const dj = ev.target.closest('.defjump');
   if (dj) {
     revealDef(+dj.dataset.defLine, +dj.dataset.defS, +dj.dataset.defE);
+    return;
+  }
+  const cell = ev.target.closest('#chart .cell');
+  if (cell && traceMode) {
+    startTrace(+cell.dataset.row, +cell.dataset.pos);
     return;
   }
   const t = ev.target.closest('[data-row][data-s]');
@@ -496,6 +561,412 @@ chartEl.addEventListener('dblclick', ev => {
   if (!t) return;
   revealDef(+t.dataset.defLine, +t.dataset.defS, +t.dataset.defE);
 });
+
+/* ---------- 逐针来源追溯 ---------- */
+
+function setTraceMode(on) {
+  traceMode = on;
+  traceModeBtn.textContent = on ? '🧭 追溯选择模式：开（点格元选择）'
+                                : '🧭 追溯选择模式：关';
+  traceModeBtn.classList.toggle('on', on);
+  traceModeBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  chartEl.classList.toggle('trace-mode', on);
+}
+
+function rowOk(rowNo) {
+  const r = lastData && lastData.rows && lastData.rows[rowNo - 1];
+  return r && r.status === 'ok' ? r : null;
+}
+
+/* 选择追溯目标：只有 status=ok 且针位合法的行可追溯；
+   出错 / 未计算行在图解与展开结果中根本没有可选格元，这里再兜底校验。 */
+function startTrace(rowNo, pos) {
+  const r = rowOk(rowNo);
+  if (!r || !Array.isArray(r.stitches)) {
+    flashTraceDenied('该行出错或未计算，不能选择追溯；修正后可依新结果重新选择。');
+    return;
+  }
+  if (!Number.isInteger(rowNo) || !Number.isInteger(pos)) {
+    flashTraceDenied('请填写有效的行号与针位（正整数）。');
+    return;
+  }
+  if (pos < 1 || pos > r.stitches.length) {
+    flashTraceDenied(`第 ${rowNo} 行共 ${r.stitches.length} 个产出针，` +
+      `针位需在 1–${r.stitches.length} 之间。`);
+    return;
+  }
+
+  let truncated = false;
+  let nodeCount = 0;
+  const hitLimit = () => {
+    nodeCount += 1;
+    if (nodeCount > MAX_TRACE_NODES) { truncated = true; return true; }
+    return false;
+  };
+
+  const build = (curRow, curPos) => {
+    const node = {
+      row: curRow, pos: curPos,
+      kind: 'stitch', children: [], color: null, inChart: true, st: null,
+    };
+    if (hitLimit()) return node;
+    const cur = rowOk(curRow);
+    if (!cur) return node;
+    const st = cur.stitches[curPos - 1];
+    node.st = st;
+    node.inChart = curPos <= MAX_CELLS;
+    if (!st) return node; // 防御：针位在新结果中已不存在
+    if (st.sym === 'yo') {
+      node.kind = 'yo';
+      return node; // yo 没有输入：新增针，回溯终止
+    }
+    if (curRow === 1) {
+      for (const p of (st.pre || [])) {
+        if (hitLimit()) break;
+        node.children.push({
+          row: 0, pos: p, kind: 'cast', children: [],
+          color: null, inChart: p <= MAX_CELLS, st: null,
+        });
+      }
+      return node;
+    }
+    if (truncated) return node;
+    for (const p of (st.pre || [])) {
+      node.children.push(build(curRow - 1, p));
+      if (truncated) break;
+    }
+    return node;
+  };
+
+  const tree = build(rowNo, pos);
+  const castLeaves = [];
+  const yoLeaves = [];
+  // 按从左到右的顺序给来源分支（叶子）编号并配色
+  let leafSeq = 0;
+  const assign = node => {
+    if (node.kind === 'cast' || node.kind === 'yo') {
+      node.color = TRACE_COLORS[leafSeq % TRACE_COLORS.length];
+      node.leafNo = leafSeq + 1;
+      leafSeq += 1;
+      (node.kind === 'cast' ? castLeaves : yoLeaves).push(node);
+      return;
+    }
+    node.children.forEach(assign);
+    node.color = node.children.length
+      ? node.children[0].color
+      : TRACE_COLORS[leafSeq % TRACE_COLORS.length];
+  };
+  assign(tree);
+
+  trace = {
+    row: rowNo, pos, tree, castLeaves, yoLeaves,
+    truncated, nodeCount: Math.min(nodeCount, MAX_TRACE_NODES),
+  };
+  renderTrace();
+  const ri = document.getElementById('traceRowInp');
+  const pi = document.getElementById('tracePosInp');
+  if (ri) ri.value = rowNo;
+  if (pi) pi.value = pos;
+  traceBodyEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+function clearTrace({ silent } = {}) {
+  trace = null;
+  document.querySelectorAll('.chip.trace-target, .chip.trace-ancestor')
+    .forEach(c => c.classList.remove('trace-target', 'trace-ancestor'));
+  const old = chartEl.querySelector('#traceOverlay');
+  if (old) old.remove();
+  // 还原追溯时为起针标记撑开的 SVG 高度与说明文字位置
+  if (chartGeom) {
+    chartEl.setAttribute('height', chartGeom.origHeight);
+    const caption = chartEl.querySelector('#castCaption');
+    if (caption) caption.setAttribute('y', chartGeom.capY);
+  }
+  if (!silent) renderTrace();
+}
+
+function flashTraceDenied(msg) {
+  clearTrace({ silent: true }); // 先移除旧的高亮/连线，再显示拒绝原因
+  traceBodyEl.textContent = '';
+  traceBodyEl.append(el('p', { class: 'trace-denied' }, '⚠ ' + msg));
+  traceBodyEl.append(traceSelector());
+}
+
+/* ---- 渲染：文字面板 + 展开列表高亮 + SVG 覆盖层 ---- */
+
+function renderTrace() {
+  traceBodyEl.textContent = '';
+  if (!trace) {
+    traceBodyEl.append(el('p', { class: 'trace-empty' },
+      '尚未选择产出针。仅已计算通过的行可追溯；出错或未计算的行不能选择。'));
+    traceBodyEl.append(traceSelector());
+    return;
+  }
+
+  // 1) 摘要：目标 + 起针/yo 两个来源分支清单
+  const targetSt = trace.tree.st;
+  const head = el('div', { class: 'trace-head' },
+    el('span', { class: 'trace-target-name' },
+      `目标：第 ${trace.row} 行 · 第 ${trace.pos} 针 · ${SYM_NAME[targetSt.sym]}`),
+    el('span', { class: 'trace-count' },
+      `覆盖 ${trace.nodeCount} 个针位 · ${trace.castLeaves.length} 个起针来源 · ` +
+      `${trace.yoLeaves.length} 个 yo 新针来源`),
+    el('button', { class: 'trace-clear', type: 'button' }, '清除追溯'));
+  traceBodyEl.append(head);
+
+  const branchLine = el('div', { class: 'trace-branches' },
+    el('span', { class: 'tb-label' }, '来源分支：'));
+  trace.castLeaves.forEach(n => branchLine.append(leafTag(n, '起针 ' + n.pos)));
+  trace.yoLeaves.forEach(n =>
+    branchLine.append(leafTag(n, `yo：第 ${n.row} 行第 ${n.pos} 针`)));
+  traceBodyEl.append(branchLine);
+
+  // 2) 逐跳树形文字（含图中未绘出的针位，照样全部列出）
+  const treeWrap = el('div', { class: 'trace-tree' });
+  treeWrap.append(treeNodeLine(trace.tree, true));
+  const ul = el('ol', { class: 'tt-children' });
+  trace.tree.children.forEach(ch => ul.append(renderTreeNode(ch)));
+  treeWrap.append(ul);
+  traceBodyEl.append(treeWrap);
+
+  const undrawn = countUndrawn(trace.tree);
+  if (undrawn) {
+    traceBodyEl.append(el('p', { class: 'trace-note' },
+      `注：其中 ${undrawn} 个针位超出图解绘制上限（每行 ${MAX_CELLS} 格），` +
+      '未在图中连线，已在上方逐针文字列出。'));
+  }
+  if (trace.truncated) {
+    traceBodyEl.append(el('p', { class: 'trace-note warn' },
+      `⚠ 追溯覆盖针位超过 ${MAX_TRACE_NODES}，更远的前驱未继续展开；` +
+      '已列出的部分仍为完整的逐针前驱关系。'));
+  }
+
+  traceBodyEl.append(traceSelector());
+
+  // 3) 展开列表 & 图解标记
+  markChips();
+  drawTraceOverlay();
+}
+
+/* 行/针快捷选择：展开列表超过 400 针、图解超过 1000 格未绘出时，
+   仍可由此直接选择任意已计算行的产出针进行追溯。 */
+function traceSelector() {
+  const rowInp = el('input', {
+    id: 'traceRowInp', class: 'trace-inp', type: 'number',
+    min: '1', placeholder: '行',
+  });
+  const posInp = el('input', {
+    id: 'tracePosInp', class: 'trace-inp', type: 'number',
+    min: '1', placeholder: '针位',
+  });
+  const go = el('button', { class: 'trace-go', type: 'button' }, '开始追溯');
+  go.addEventListener('click', () => {
+    startTrace(parseInt(rowInp.value, 10), parseInt(posInp.value, 10));
+  });
+  [rowInp, posInp].forEach(i => i.addEventListener('keydown', e => {
+    if (e.key === 'Enter') go.click();
+  }));
+  return el('div', { class: 'trace-selector' },
+    el('span', { class: 'tb-label' }, '直接选择：第'),
+    rowInp, el('span', null, '行 · 第'), posInp, el('span', null, '针'),
+    go);
+}
+
+function leafTag(node, text) {
+  return el('span', { class: 'leaf-tag' },
+    el('i', { class: 'leaf-dot', style: `background:${node.color}` }), text);
+}
+
+function nodeLoc(st) {
+  if (!st) return '';
+  if (st.def) {
+    const via = (st.chain && st.chain.length > 1)
+      ? `（经 ${st.chain.slice(0, -1).join(' → ')}）` : '';
+    return `行内引用第 ${st.s + 1}–${st.e} 列 · 定义「${st.def.name}」` +
+      `第 ${st.def.line} 行第 ${st.def.s + 1}–${st.def.e} 列${via}`;
+  }
+  return `源第 ${st.s + 1}–${st.e} 列`;
+}
+
+function treeNodeLine(node, isRoot) {
+  const swatch = el('i', { class: 'leaf-dot', style: `background:${node.color}` });
+  if (node.kind === 'cast') {
+    return el('div', { class: 'tt-node terminal' }, swatch,
+      el('b', null, `起针第 ${node.pos} 针`),
+      el('span', { class: 'tt-note' }, '（第 1 行消耗的起针针位）'));
+  }
+  if (node.kind === 'yo') {
+    const line = el('div', {
+      class: 'tt-node yo-term' + (isRoot ? ' root' : ''),
+      title: nodeLoc(node.st),
+    }, swatch,
+      el('b', null, `第 ${node.row} 行第 ${node.pos} 针 · yo 挂线`),
+      el('span', { class: 'tt-note' }, '（无输入针：此处产生的新针，回溯终止）'));
+    appendLocJump(line, node, '定位');
+    return line;
+  }
+  const cls = 'tt-node' + (isRoot ? ' root' : '');
+  const line = el('div', { class: cls, title: nodeLoc(node.st) }, swatch,
+    el('b', null, `第 ${node.row} 行第 ${node.pos} 针 · ${SYM_NAME[node.st.sym]}`),
+    el('span', { class: 'tt-rel' },
+      node.st.pre.length === 2
+        ? `并入上一行第 ${node.st.pre[0]}、${node.st.pre[1]} 针`
+        : `承接上一行第 ${node.st.pre[0]} 针`));
+  if (!node.inChart) line.append(el('span', { class: 'tt-undrawn' }, '图中未绘出'));
+  appendLocJump(line, node, '定位');
+  if (node.st.def) {
+    line.append(el('button', {
+      class: 'defjump linkish', type: 'button',
+      'data-def-line': node.st.def.line,
+      'data-def-s': node.st.def.s, 'data-def-e': node.st.def.e,
+    }, '↗ 定义'));
+  }
+  return line;
+}
+
+function appendLocJump(line, node, label) {
+  if (!node.st) return;
+  line.append(el('button', {
+    class: 'locate linkish', type: 'button',
+    'data-row': node.row, 'data-s': node.st.s, 'data-e': node.st.e,
+  }, label));
+}
+
+function renderTreeNode(node) {
+  const li = el('li', { class: 'tt-li' });
+  li.append(treeNodeLine(node, false));
+  if (node.children.length) {
+    const ul = el('ol', { class: 'tt-children' });
+    node.children.forEach(ch => ul.append(renderTreeNode(ch)));
+    li.append(ul);
+  }
+  return li;
+}
+
+function countUndrawn(node) {
+  if (node.kind === 'cast') return node.inChart ? 0 : 1;
+  let n = (node.kind === 'stitch' && !node.inChart) ? 1 : 0;
+  node.children.forEach(ch => { n += countUndrawn(ch); });
+  return n;
+}
+
+/* ---- 展开结果中的目标/前驱高亮 ---- */
+
+function markChips() {
+  document.querySelectorAll('.chip.trace-target, .chip.trace-ancestor')
+    .forEach(c => c.classList.remove('trace-target', 'trace-ancestor'));
+  const visit = (node, role) => {
+    if (node.kind === 'stitch' || node.kind === 'yo') {
+      const chip = rowsEl.querySelector(
+        `.rowcard[data-row="${node.row}"] .chip[data-pos="${node.pos}"]`);
+      if (chip) chip.classList.add(role);
+      node.children.forEach(ch => visit(ch, 'trace-ancestor'));
+    }
+  };
+  visit(trace.tree, 'trace-target');
+}
+
+/* ---- SVG 覆盖层：来源分支连线 + 起针/yo 标记 ---- */
+
+function drawTraceOverlay() {
+  const old = chartEl.querySelector('#traceOverlay');
+  if (old) old.remove();
+  if (!chartGeom) return;
+  const { cell, left, top, n } = chartGeom;
+
+  const overlay = svgEl('g', { id: 'traceOverlay' });
+  const edgeLayer = svgEl('g', { class: 'tr-edges' });
+  const markLayer = svgEl('g', { class: 'tr-marks' });
+  overlay.append(edgeLayer, markLayer);
+
+  const drawn = new Set();
+  const edgeDrawn = new Set();
+
+  const cx = pos => left + (pos - 1) * cell + cell / 2;
+  // 展开 SVG 底部空间放起针标记，并把「起针」说明文字下移避让
+  const castY = chartGeom.contentEnd + cell + 6;
+  const newHeight = castY + 24;
+  chartEl.setAttribute('height', newHeight);
+  const caption = chartEl.querySelector('#castCaption');
+  if (caption) caption.setAttribute('y', castY + 17);
+
+  function addEdges(node) {
+    // 本针超出绘制上限时，它与所有更远的前驱都不在图上：整支剪去，
+    // 避免出现连不到目标针的悬空线段（这些针位仍由文字面板列出）。
+    if (node.kind === 'stitch' && !node.inChart) return;
+    node.children.forEach(ch => {
+      if (ch.inChart) {
+        const key = [node.row, node.pos, ch.row, ch.pos].join(',');
+        if (!edgeDrawn.has(key)) {
+          edgeDrawn.add(key);
+          const x2 = cx(node.pos);
+          const y2 = chartGeom.yOf(node.row - 1) + 2;
+          let x1, y1;
+          if (ch.row === 0) {
+            x1 = cx(ch.pos);
+            y1 = castY - 5;           // 起针三角顶点
+          } else {
+            x1 = cx(ch.pos);
+            y1 = chartGeom.yOf(ch.row - 1) + cell - 2;
+          }
+          edgeLayer.append(svgEl('line', {
+            x1, y1, x2, y2, stroke: ch.color,
+            'stroke-width': ch.kind === 'cast' ? 1.6 : 2,
+            'stroke-opacity': .8,
+            'stroke-dasharray': ch.kind === 'cast' ? '4 3' : null,
+          }));
+        }
+      }
+      addEdges(ch);
+    });
+  }
+
+  function mark(node) {
+    const key = node.row + ':' + node.pos + ':' + node.kind;
+    if (drawn.has(key)) return;
+    drawn.add(key);
+
+    if (node.kind === 'cast') {
+      if (!node.inChart) return;
+      const x = cx(node.pos);
+      markLayer.append(svgEl('polygon', {
+        points: `${x - 4},${castY + 4} ${x + 4},${castY + 4} ${x},${castY - 4}`,
+        fill: node.color, stroke: '#fff', 'stroke-width': 1,
+      }));
+      const t = svgEl('text', {
+        x, y: castY + 15, 'text-anchor': 'middle',
+        'font-size': 9, fill: node.color, class: 'tr-cast-label',
+      });
+      t.textContent = node.pos;
+      markLayer.append(t);
+      return;
+    }
+    if (node.inChart) {
+      const x = cx(node.pos);
+      const y = chartGeom.yOf(node.row - 1);
+      const isRoot = node === trace.tree;
+      markLayer.append(svgEl('rect', {
+        x: x - cell / 2 + 1.5, y: y + 1.5,
+        width: cell - 3, height: cell - 3, rx: 3,
+        fill: 'none', stroke: node.color,
+        'stroke-width': isRoot ? 3 : 2,
+        'stroke-dasharray': node.kind === 'yo' ? '3 2' : null,
+      }));
+      if (node.kind === 'yo') {
+        // yo 来源端：填色圆点，标出「新针由此产生」
+        markLayer.append(svgEl('circle', {
+          cx: x, cy: y + cell / 2, r: Math.max(2.5, cell * .12),
+          fill: node.color, stroke: '#fff', 'stroke-width': 1,
+        }));
+      }
+    }
+    node.children.forEach(mark);
+  }
+
+  addEdges(trace.tree);
+  mark(trace.tree);
+  chartEl.append(overlay);
+}
 
 /* ---------- 启动 ---------- */
 

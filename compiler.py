@@ -574,7 +574,14 @@ def expand(items, available, row, defs=None):
     """把 AST 展开为针法列表；available = 本行可消耗针数（上一行产出）。
 
     返回 (stitches, consumed, produced)。stitches 中每一项：
-        {'sym':..., 's': 源码起始列(0基), 'e': 源码结束列(0基, 开区间)}
+        {'sym':..., 's': 源码起始列(0基), 'e': 源码结束列(0基, 开区间),
+         'pre': [输入针位...]}   1 基针位，相对本行的输入针列
+    'pre' 是逐针前驱关系，按针法的实际消耗记录：
+        k / p     → 1 个前驱；k2tog → 2 个前驱（两针合并为一针）；
+        yo        → 无前驱（挂线凭空产生的新针）。
+    第 1 行的前驱针位指向「起针」针位；其后每行指向上一行的产出针位。
+    分组重复、行末重复与片段的多次引用都按每次实际展开消耗针位，
+    即使源码位置相同，各次展开的 'pre' 也互不相同（不按源码位置合并）。
     来自片段的针法额外携带：
         'def':   {'line','s','e','name'} 实际针法在定义区中的位置
         'chain': [片段名...]              从行内引用到该定义的链
@@ -597,19 +604,22 @@ def expand(items, available, row, defs=None):
             if ctx.cur_entry is not None:
                 msg += "（展开片段 '%s' 时）" % ctx.cur_entry['name']
             raise ctx.error(msg, st, remaining=remaining)
+        # 逐针前驱：本次实际消耗的输入针位（1 基）。重复展开同一源码段时
+        # 每次都消耗新的针位，因此不按源码位置合并针目。
+        pre = list(range(consumed + 1, consumed + c + 1))
         consumed += c
+        base = {'sym': st['sym'], 's': st['s'], 'e': st['e'], 'pre': pre}
         if ctx.cur_entry is None:
-            out.append({'sym': st['sym'], 's': st['s'], 'e': st['e']})
+            out.append(base)
         else:
-            out.append({
-                'sym': st['sym'],
+            out.append(dict(base, **{
                 's': ctx.anchor[0],
                 'e': ctx.anchor[1],
                 'def': {'line': ctx.cur_entry['line'],
                         's': st['s'], 'e': st['e'],
                         'name': ctx.cur_entry['name']},
                 'chain': list(ctx.stack),
-            })
+            }))
         if len(out) > MAX_STITCHES_PER_ROW:
             raise ctx.error(
                 "展开针数超过上限 %d（检查 xN 是否过大）"

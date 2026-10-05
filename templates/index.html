@@ -44,12 +44,16 @@
   </section>
 
   <section class="pane" id="rowsPane">
-    <h2>③ 展开结果 <span class="sub">（点击针法定位行内引用，点 ↗ 定位定义）</span></h2>
+    <h2>③ 展开结果 <span class="sub">（单击针法定位行内引用，点「溯」逐针追溯来源，点 ↗ 定位定义）</span></h2>
     <div id="rows" class="rows"></div>
   </section>
 
   <section class="pane" id="chartPane">
-    <h2>④ 图解 <span class="sub">（第 1 行在底部，单击格元回到源码，双击定位定义）</span></h2>
+    <h2>④ 图解
+      <span class="sub">（第 1 行在底部，单击格元回到源码，双击定位定义）</span>
+      <button id="traceModeBtn" class="trace-mode-btn" type="button"
+        aria-pressed="false">🧭 追溯选择模式：关</button>
+    </h2>
     <div id="chartWrap" class="chart-wrap">
       <svg id="chart" xmlns="http://www.w3.org/2000/svg" role="img"
            aria-label="针织图解"></svg>
@@ -62,6 +66,15 @@
     </div>
   </section>
 </main>
+
+<section class="pane trace-pane" id="tracePane">
+  <h2>⑤ 逐针来源追溯
+    <span class="sub">（在 ③ 点「溯」或在 ④ 开启追溯选择模式后点格元；沿各行实际消耗逐针回溯到起针或 yo）</span>
+  </h2>
+  <div id="traceBody" class="trace-body">
+    <p class="trace-empty">尚未选择产出针。仅已计算通过的行可追溯；出错或未计算的行不能选择。</p>
+  </div>
+</section>
 
 <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
