@@ -44,16 +44,17 @@
   </section>
 
   <section class="pane" id="rowsPane">
-    <h2>③ 展开结果 <span class="sub">（点击针法定位行内引用，点 ↗ 定位定义）</span></h2>
+    <h2>③ 展开结果 <span class="sub">（点击针法定位行内引用并追溯来源，点 ↗ 定位定义）</span></h2>
     <div id="rows" class="rows"></div>
   </section>
 
   <section class="pane" id="chartPane">
-    <h2>④ 图解 <span class="sub">（第 1 行在底部，单击格元回到源码，双击定位定义）</span></h2>
+    <h2>④ 图解 <span class="sub">（第 1 行在底部，单击格元回到源码并追溯来源，双击定位定义）</span></h2>
     <div id="chartWrap" class="chart-wrap">
       <svg id="chart" xmlns="http://www.w3.org/2000/svg" role="img"
            aria-label="针织图解"></svg>
     </div>
+    <div id="tracePanel" class="trace-panel"></div>
     <div class="legend">
       <span><i class="sw k"></i>k 下针</span>
       <span><i class="sw p"></i>p 上针</span>

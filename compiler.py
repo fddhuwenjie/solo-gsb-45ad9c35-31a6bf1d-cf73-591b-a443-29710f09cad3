@@ -28,6 +28,13 @@
     令 R = 当前剩余未编织针数，若 R % C != 0，报错并给出余针 R；
     否则恰好重复 R / C 次。整行消耗必须精确等于上一行产出的针数，
     既不能截断也不能补针。片段按展开后的实际消耗计入 C 与整行针数。
+
+逐针来源追溯：
+    展开结果中每个产出针携带 'src'——它实际消耗的输入针位（0 基，
+    按上一行产出针序编号；第 1 行即起针针位）。k/p 各承接 1 针，
+    k2tog 合并 2 针，yo 没有输入（新针，'src' 为空）。分组、行末
+    重复与多次引用片段均按每次实际展开记录，不按相同源码位置合并
+    针目；沿各行 'src' 逐级回溯，可追到起针针位或 yo 新针。
 """
 import unicodedata
 
@@ -574,7 +581,12 @@ def expand(items, available, row, defs=None):
     """把 AST 展开为针法列表；available = 本行可消耗针数（上一行产出）。
 
     返回 (stitches, consumed, produced)。stitches 中每一项：
-        {'sym':..., 's': 源码起始列(0基), 'e': 源码结束列(0基, 开区间)}
+        {'sym':..., 's': 源码起始列(0基), 'e': 源码结束列(0基, 开区间),
+         'src': [int, ...]}
+    'src' 是本针实际消耗的输入针位（0 基，按上一行产出针序编号；第 1 行
+    即起针针位）：k/p 各 1 个、k2tog 2 个、yo 为空（新针，无输入）。
+    分组、行末重复与多次引用片段均按每次实际展开记录，即使映射回同一
+    源码位置，各针目的 'src' 也各自独立、互不合并。
     来自片段的针法额外携带：
         'def':   {'line','s','e','name'} 实际针法在定义区中的位置
         'chain': [片段名...]              从行内引用到该定义的链
@@ -597,9 +609,11 @@ def expand(items, available, row, defs=None):
             if ctx.cur_entry is not None:
                 msg += "（展开片段 '%s' 时）" % ctx.cur_entry['name']
             raise ctx.error(msg, st, remaining=remaining)
+        src = list(range(consumed, consumed + c))  # 本针消耗的输入针位（0 基）
         consumed += c
         if ctx.cur_entry is None:
-            out.append({'sym': st['sym'], 's': st['s'], 'e': st['e']})
+            out.append({'sym': st['sym'], 's': st['s'], 'e': st['e'],
+                        'src': src})
         else:
             out.append({
                 'sym': st['sym'],
@@ -609,6 +623,7 @@ def expand(items, available, row, defs=None):
                         's': st['s'], 'e': st['e'],
                         'name': ctx.cur_entry['name']},
                 'chain': list(ctx.stack),
+                'src': src,
             })
         if len(out) > MAX_STITCHES_PER_ROW:
             raise ctx.error(

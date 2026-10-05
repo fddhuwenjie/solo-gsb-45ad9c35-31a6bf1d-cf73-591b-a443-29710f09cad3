@@ -401,5 +401,73 @@ class TestSnippets(unittest.TestCase):
         self.assertIn("'@' 后需要片段名称", r['rows'][0]['error']['message'])
 
 
+class TestProvenance(unittest.TestCase):
+    """逐针来源追溯：每个产出针的 'src' 记录它实际消耗的输入针位（0 基）。"""
+
+    def srcs(self, row):
+        return [s['src'] for s in row['stitches']]
+
+    def test_kp_each_take_one(self):
+        r = run(3, 'k p k')
+        self.assertEqual(self.srcs(r['rows'][0]), [[0], [1], [2]])
+
+    def test_yo_has_no_input(self):
+        r = run(2, 'k yo k')
+        self.assertEqual(self.srcs(r['rows'][0]), [[0], [], [1]])
+
+    def test_k2tog_merges_two(self):
+        r = run(4, 'k k2tog k')
+        self.assertEqual(self.srcs(r['rows'][0]), [[0], [1, 2], [3]])
+
+    def test_group_repeat_per_expansion(self):
+        # (k2tog)x2：两次展开映射回同一源码段，但消耗各自实际的针位
+        r = run(4, '(k2tog)x2')
+        sts = r['rows'][0]['stitches']
+        self.assertEqual(self.srcs(r['rows'][0]), [[0, 1], [2, 3]])
+        self.assertEqual((sts[0]['s'], sts[0]['e']), (sts[1]['s'], sts[1]['e']))
+
+    def test_star_repeat_per_expansion(self):
+        # 6 针，*k2tog k* 单次耗 3 → 重复 2 次，每次展开独立计针
+        r = run(6, '*k2tog k*')
+        self.assertEqual(self.srcs(r['rows'][0]),
+                         [[0, 1], [2], [3, 4], [5]])
+
+    def test_refs_per_expansion_not_merged(self):
+        # 同一片段的两次引用：源码位置各自映射回本引用，针位按实际展开计算
+        r = compile_rows(4, ['@a @a'], 'a = k k')
+        sts = r['rows'][0]['stitches']
+        self.assertEqual(self.srcs(r['rows'][0]), [[0], [1], [2], [3]])
+        self.assertEqual([(s['s'], s['e']) for s in sts],
+                         [(0, 2), (0, 2), (3, 5), (3, 5)])
+
+    def test_star_with_fragment_per_expansion(self):
+        # 镂空 = yo k2tog（单次耗 2）：k4 后余 6 → 重复 3 次
+        r = compile_rows(10, ['k k k k *@镂空*'], '镂空 = yo, k2tog')
+        self.assertEqual(self.srcs(r['rows'][0]),
+                         [[0], [1], [2], [3],
+                          [], [4, 5], [], [6, 7], [], [8, 9]])
+
+    def test_multi_row_trace_to_cast_on(self):
+        # 起针 4：行1 k2tog k2tog（4→2），行2 k2tog（2→1）
+        # 机读回溯：行2 第1针 ← 行1 第1、2针 ← 起针第 1..4 针
+        r = run(4, 'k2tog k2tog', 'k2tog')
+        cur = [0]
+        for row in reversed(r['rows']):
+            cur = sorted({i for j in cur for i in row['stitches'][j]['src']})
+        self.assertEqual(cur, [0, 1, 2, 3])
+
+    def test_trace_terminates_at_yo(self):
+        # 行1 yo k（1→2），行2 k2tog（2→1）：
+        # 行2 第1针 ← 行1 第1针(yo，新针，支路终止) + 第2针(k) ← 起针第1针
+        r = run(1, 'yo k', 'k2tog')
+        rows = r['rows']
+        self.assertEqual(self.srcs(rows[0]), [[], [0]])
+        self.assertEqual(self.srcs(rows[1]), [[0, 1]])
+        cur = [0]
+        for row in reversed(rows):
+            cur = sorted({i for j in cur for i in row['stitches'][j]['src']})
+        self.assertEqual(cur, [0])  # 仅起针第 1 针；另一支路终止于 yo
+
+
 if __name__ == '__main__':
     unittest.main()
